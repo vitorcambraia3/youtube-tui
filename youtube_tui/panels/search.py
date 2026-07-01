@@ -41,10 +41,10 @@ class SearchPanel(Vertical):
         self._tracks: list[Track] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("[b]youtube-tui[/]  [d]digite e enter para buscar[/]", id="s-title")
-        yield Input(placeholder="ex: lofi hip hop radio", id="s-input")
+        yield Static("[b]youtube-tui[/]  [d]busque ou cole URL de playlist[/]", id="s-title")
+        yield Input(placeholder="ex: lofi hip hop  ou  https://youtube.com/playlist?list=...", id="s-input")
         yield ListView(id="s-results")
-        yield Static("[d]1-5 abas  tab foco  s tocar  f +fila  a fav  d remover[/]", id="s-hint")
+        yield Static("[d]enter=buscar/URL  s=tocar  g=tocar tudo  f=+fila  a=fav  d=remover[/]", id="s-hint")
 
     @on(Input.Submitted)
     async def on_submit(self, event: Input.Submitted) -> None:
@@ -56,7 +56,10 @@ class SearchPanel(Vertical):
         self._tracks = []
         self.query_one("#s-hint", Static).update("[d]buscando...[/]")
         try:
-            tracks = await self.app.youtube_search(query)
+            if self.app.is_youtube_url(query):
+                tracks = await self.app.fetch_playlist(query)
+            else:
+                tracks = await self.app.youtube_search(query)
         except Exception as e:
             self.query_one("#s-hint", Static).update(f"[red]erro: {e}[/]")
             return
@@ -65,9 +68,9 @@ class SearchPanel(Vertical):
         for t in tracks:
             lv.append(ListItem(Label(track_label(t, storage=storage, two_lines=True))))
         self.query_one("#s-hint", Static).update(
-            f"[d]{len(tracks)} resultados — s tocar  f +fila  a fav[/]"
+            f"[d]{len(tracks)} faixas — s=tocar  g=tocar tudo  f=+fila  a=fav[/]"
         )
-        self.app.notify(f"{len(tracks)} resultados", timeout=1)
+        self.app.notify(f"{len(tracks)} faixas", timeout=1)
         try:
             lv.focus()
         except Exception:

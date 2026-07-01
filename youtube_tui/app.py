@@ -5,11 +5,11 @@ from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Header, TabbedContent, TabPane
+from textual.widgets import Header, ListView, TabbedContent, TabPane
 
 from .models import Track
 from .player import MpvController
-from .search import search as yt_search
+from .search import search as yt_search, fetch_playlist as yt_fetch_playlist, is_youtube_url
 from .storage import Storage
 from .panels.search import SearchPanel
 from .panels.now_playing import NowPlayingPanel
@@ -88,6 +88,7 @@ class YoutubeTuiApp(App):
         Binding("minus", "volume_down", "-Vol", show=False),
         Binding("s", "panel_play", "Tocar", show=False),
         Binding("f", "panel_queue", "+Fila", show=False),
+        Binding("g", "panel_play_all", "Tocar tudo", show=False),
         Binding("a", "panel_fav", "Favorito", show=False),
         Binding("d", "panel_del", "Remover", show=False),
     ]
@@ -356,9 +357,37 @@ class YoutubeTuiApp(App):
                     self.notify("removido dos favoritos", timeout=1)
                     p._rebuild()
 
+    def action_panel_play_all(self) -> None:
+        from .panels.search import SearchPanel
+        p = self._panel_of(SearchPanel)
+        if p is None or not hasattr(p, "_tracks") or not p._tracks:
+            self.notify("nenhuma lista para tocar", timeout=1)
+            return
+        lv = p.query_one("#s-results", ListView)
+        start = lv.index if lv.index is not None else 0
+        tracks = p._tracks
+        self.play_from_list(tracks, start)
+        self.notify(f"tocando {len(tracks) - start} faixas", timeout=2)
+
     # ---- helpers de UI ----
     async def youtube_search(self, query: str) -> list[Track]:
         return await yt_search(query, limit=30)
+
+    async def fetch_playlist(self, url: str) -> list[Track]:
+        return await yt_fetch_playlist(url)
+
+    def is_youtube_url(self, s: str) -> bool:
+        return is_youtube_url(s)
+
+    def play_from_list(self, tracks: list[Track], start: int = 0) -> None:
+        self._worker(self._play_from_list(tracks, start))
+
+    async def _play_from_list(self, tracks: list[Track], start: int = 0) -> None:
+        if not tracks:
+            return
+        self.queue = list(tracks[start:])
+        self.current_index = -1
+        await self.play_index(0)
 
     def append_and_play(self, track: Track) -> None:
         self._worker(self._append_and_play(track))
