@@ -59,7 +59,12 @@ class YoutubeTuiApp(App):
     """
 
     def _worker(self, coro):
-        return self.run_worker(coro, exit_on_error=False)
+        async def _wrapped():
+            try:
+                await coro
+            except Exception as e:
+                self.notify(f"[mpv] {type(e).__name__}: {str(e)[:120]}", severity="error", timeout=6)
+        return self.run_worker(_wrapped(), exit_on_error=False)
 
     BINDINGS = [
         Binding("1", "search_tab", "Busca", show=True, priority=True),
@@ -111,6 +116,7 @@ class YoutubeTuiApp(App):
         await self.player.start()
         self.player.on_end_file = self._on_end_file
         self.player.on_start_file = self._on_start_file
+        self.player.on_audio_error = self._on_audio_error
         self._poller = self.set_interval(0.5, self._poll_state)
         self.notify("Pronto. digite a busca e pressione Enter", timeout=2)
 
@@ -129,8 +135,8 @@ class YoutubeTuiApp(App):
         track = self.queue[index]
         self.current_track = track
         self.storage.log_play(track)
-        await self.player.load(track.webpage_url, "replace")
         self._mpv_error_shown = False
+        await self.player.load(track.webpage_url, "replace")
         self.notify(f"Tocando: {track.title}", timeout=2)
         self._refresh_mini()
         self._refresh_now()
@@ -158,6 +164,9 @@ class YoutubeTuiApp(App):
     async def _on_start_file(self, name: str) -> None:
         self._refresh_now()
         self._refresh_mini()
+
+    async def _on_audio_error(self, msg: str) -> None:
+        self.notify(f"[mpv audio] {msg}", severity="error", timeout=8)
 
     # ---- actions ----
     def action_play_pause(self) -> None:
@@ -400,6 +409,12 @@ class YoutubeTuiApp(App):
         self._worker(self._fetch_props())
 
     async def _fetch_props(self) -> None:
+        if self._mpv_error_shown is False:
+            errs = self.player.last_errors(3)
+            if errs:
+                self._mpv_error_shown = True
+                msg = "  ".join(errs)[:200]
+                self.notify(f"[mpv] {msg}", severity="error", timeout=8)
         try:
             pos = await self.player.get_property("time-pos")
             dur = await self.player.get_property("duration")
@@ -407,12 +422,6 @@ class YoutubeTuiApp(App):
             vol = await self.player.get_property("volume")
         except Exception:
             return
-        if self._mpv_error_shown is False:
-            errs = self.player.last_errors(3)
-            if errs:
-                self._mpv_error_shown = True
-                msg = "  ".join(errs)[:200]
-                self.notify(f"[mpv] {msg}", severity="error", timeout=8)
         self._np_time = float(pos) if isinstance(pos, (int, float)) else 0.0
         self._np_dur = float(dur) if isinstance(dur, (int, float)) else 0.0
         self._np_paused = bool(paused)

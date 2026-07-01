@@ -106,7 +106,7 @@ A barra fixa em cima das abas mostra `♪ título 1:23/3:45 ▶`. Toque/clicáve
 
 ## Como funciona
 
-- `player.py`: sobe um processo `mpv --idle --no-video --input-ipc-server=<socket>` e fala com ele via JSON sobre socket unix (asyncio). Eventos `end-file` (reason `eof`) disparam a proxima faixa automaticamente. Respeita o `mpv.conf` do usuário (importante no Termux para o audio output `opensles`).
+- `player.py`: sobe um **novo processo `mpv` por faixa** (passando a URL direto no spawn) e fala com ele via JSON sobre socket unix (asyncio). Motivo: nesta build do mpv do Termux, `loadfile` via IPC nao aciona o hook yt-dlp (URLs do YouTube ficam mudas); passar a URL no spawn funciona. `--keep-open=always` mantem o processo vivo apos EOF para controle IPC durante a faixa e para a transicao limpa. Eventos `end-file` (reason `eof`) disparam a proxima faixa (novo respawn). Erros do stderr sao capturados e notificados na UI (`on_audio_error` + `_fetch_props`).
 - `search.py`: `yt-dlp "ytsearch30:QUERY" --flat-playlist -J` retorna entradas; parseamos `id`, `title`, `channel`, `duration`, `url`.
 - `storage.py`: SQLite em `$XDG_DATA_HOME/youtube-tui/library.db` (ou `~/.local/share/...`).
 - `app.py`: Textual App single-screen com `TabbedContent` (abas na base) + mini-player fixo + keybindings globais. As teclas `1`-`5` são `priority=True` para sempre trocar de aba. `_set_tab` limpa o foco antes de trocar (Textual segue foco dentro de panes) e foca o widget inicial de cada aba.
@@ -131,8 +131,12 @@ scripts/termux-setup.sh
 ## Troubleshooting (Termux)
 
 - **mpv nao toca video do YouTube**: o `mpv` do Termux usa `yt-dlp` via hook Lua. Se falhar, rode `mpv <url>` manualmente para ver o erro e atualize o `yt-dlp` (`pip install -U yt-dlp`).
-- **socket IPC nao aparece**: raro; o app espera ate 5s e aborta com erro.
-- **sem audio**: verifique `termux-wake-lock` se o app for pra background, e permissao de microfone nao necessaria.
+- **sem som / "Tocando: ..." aparece mas sem audio**: o app sobe um novo processo `mpv` para cada faixa (passando a URL direto no spawn) porque `loadfile` via IPC nao aciona o hook yt-dlp nesta build do mpv do Termux. Se mesmo assim nao sair audio:
+  - Confirme que `mpv --no-video <url>` isolado tem audio (testa o backend).
+  - Mate processos mpv pendurados de execucoes anteriores: `pkill -f 'mpv.*input-ipc-server'`.
+  - O app agora captura o stderr do mpv e notifica erros de audio output (`AO`/`audio`) na propria tela — se aparecer uma notificacao vermelha, e o ponto de partida.
+- **mpv zombies / audio ocupado**: se fechar o app na marra (matar o terminal), processos `mpv --keep-open` podem ficar pendurados segurando o audio output. Rode `pkill mpv` e abra o app de novo.
+- **gap entre faixas (~2-4s)**: esperado — cada faixa sobe um novo mpv + resolve a URL via yt-dlp. Pre-carregamento seria uma evolucao futura.
 
 ## Licenca
 

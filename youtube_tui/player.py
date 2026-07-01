@@ -10,9 +10,11 @@ from .models import Track
 
 
 class MpvController:
-    """Controla um proceso mpv via socket IPC (input-ipc-server).
+    """Controla mpv via socket IPC (input-ipc-server).
 
-    Usa asyncio para integrar com o event loop do Textual.
+    Modelo respawn-por-faixa: cada load() sobe um novo processo mpv já com a
+    URL no spawn (porque loadfile via IPC nao aciona o hook yt-dlp no mpv do
+    Termux). IPC so serve para controle durante a faixa (pause/seek/volume/poll).
     """
 
     def __init__(self) -> None:
@@ -24,19 +26,69 @@ class MpvController:
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
-        self._observers: dict[int, asyncio.Future] = {}
-        self._obs_id = 0
+        self._watch_task: Optional[asyncio.Task] = None
         self._errors: list[str] = []
+        self._volume: int = 80
         self.on_end_file: Optional[Callable[[dict], Awaitable[None] | None]] = None
         self.on_start_file: Optional[Callable[[str], Awaitable[None] | None]] = None
+        self.on_audio_error: Optional[Callable[[str], Awaitable[None] | None]] = None
 
     @property
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
     async def start(self) -> None:
-        if self.is_running:
-            return
+        # no-op: o mpv agora sobe on-demand em load()
+        return
+
+    async def _stop_internal(self) -> None:
+        """Para o processo mpv atual (quit IPC -> kill), limpa refs. Idempotente."""
+        if self._writer is not None:
+            try:
+                self._writer.write((json.dumps({"command": ["quit"]}) + "\n").encode("utf-8"))
+                await self._writer.drain()
+            except Exception:
+                pass
+        if self._proc is not None and self._proc.returncode is None:
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=1.5)
+            except asyncio.TimeoutError:
+                try:
+                    self._proc.kill()
+                    await self._proc.wait()
+                except Exception:
+                    pass
+        self._cancel_tasks()
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+        if self._sock_path and os.path.exists(self._sock_path):
+            try:
+                os.unlink(self._sock_path)
+            except OSError:
+                pass
+        self._writer = None
+        self._reader = None
+        self._proc = None
+        self._sock_path = None
+        self._pending.clear()
+
+    def _cancel_tasks(self) -> None:
+        for attr in ("_reader_task", "_stderr_task", "_watch_task"):
+            t = getattr(self, attr, None)
+            if t is not None and not t.done():
+                t.cancel()
+        self._reader_task = None
+        self._stderr_task = None
+        self._watch_task = None
+
+    async def load(self, url: str, mode: str = "replace") -> None:
+        """Sobe um novo mpv com a URL direto no spawn e conecta ao IPC."""
+        await self._stop_internal()
+        self._errors = []
+
         fd, path = tempfile.mkstemp(prefix="mpvsock-", suffix=".sock")
         os.close(fd)
         os.unlink(path)
@@ -44,12 +96,13 @@ class MpvController:
 
         self._proc = await asyncio.create_subprocess_exec(
             "mpv",
-            "--idle=yes",
-            "--no-video",
             "--no-terminal",
-            "--volume=80",
+            "--no-video",
+            f"--volume={self._volume}",
+            "--keep-open=always",
             f"--input-ipc-server={path}",
-            "--reset-on-next-file=pause",
+            "--",
+            url,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -63,8 +116,18 @@ class MpvController:
 
         self._reader, self._writer = await asyncio.open_unix_connection(self._sock_path)
         self._reader_task = asyncio.create_task(self._read_loop())
-        asyncio.create_task(self._watch_process())
-        asyncio.create_task(self._read_stderr())
+        self._watch_task = asyncio.create_task(self._watch_process())
+        self._stderr_task = asyncio.create_task(self._read_stderr())
+        asyncio.create_task(self._post_connect_check())
+
+    async def _post_connect_check(self) -> None:
+        await asyncio.sleep(0.8)
+        errs = self.last_errors(5)
+        if errs and self.on_audio_error is not None:
+            joined = "  ".join(errs)[:200]
+            res = self.on_audio_error(joined)
+            if asyncio.iscoroutine(res):
+                asyncio.create_task(res)
 
     async def _watch_process(self) -> None:
         assert self._proc is not None
@@ -73,7 +136,10 @@ class MpvController:
             if not fut.done():
                 fut.cancel()
         if self._writer is not None:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except Exception:
+                pass
 
     async def _read_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -128,14 +194,6 @@ class MpvController:
                 res = cb(msg.get("name", ""))
                 if asyncio.iscoroutine(res):
                     asyncio.create_task(res)
-        elif msg.get("event") == "property-change":
-            name = msg.get("name")
-            obs = self._observers.get(msg.get("id"))
-            data = msg.get("data")
-            if obs and not obs.done():
-                obs.set_result((name, data))
-            if name == "end-file":
-                pass
 
     async def _command(self, name: str, *args) -> object:
         if not self.is_running:
@@ -150,12 +208,6 @@ class MpvController:
         await self._writer.drain()
         return await asyncio.wait_for(fut, timeout=10)
 
-    async def load(self, url: str, mode: str = "replace") -> None:
-        await self._command("loadfile", url, mode)
-
-    async def load_and_play(self, track: Track, mode: str = "replace") -> None:
-        await self.load(track.webpage_url, mode)
-
     async def play_pause(self) -> None:
         await self._command("cycle", "pause")
 
@@ -166,7 +218,7 @@ class MpvController:
         await self.set_property("pause", False)
 
     async def stop(self) -> None:
-        await self._command("stop")
+        await self._stop_internal()
 
     async def seek(self, seconds: float) -> None:
         await self._command("seek", seconds, "relative")
@@ -175,38 +227,15 @@ class MpvController:
         await self._command("seek", seconds, "absolute")
 
     async def volume(self, value: int) -> None:
-        await self.set_property("volume", max(0, min(100, value)))
+        self._volume = max(0, min(100, value))
+        await self.set_property("volume", self._volume)
 
     async def volume_delta(self, delta: int) -> None:
+        self._volume = max(0, min(100, self._volume + delta))
         await self._command("add", "volume", delta)
 
     async def quit(self) -> None:
-        if not self.is_running:
-            return
-        try:
-            await self._command("quit")
-        except Exception:
-            pass
-        if self._proc is not None:
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=2)
-            except asyncio.TimeoutError:
-                self._proc.kill()
-        if self._writer is not None:
-            self._writer.close()
-        if self._sock_path and os.path.exists(self._sock_path):
-            try:
-                os.unlink(self._sock_path)
-            except OSError:
-                pass
-        self._writer = None
-        self._reader = None
-        self._proc = None
-        self._sock_path = None
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-        if self._stderr_task is not None:
-            self._stderr_task.cancel()
+        await self._stop_internal()
 
     async def get_property(self, name: str):
         return await self._command("get_property", name)
