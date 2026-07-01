@@ -103,8 +103,10 @@ class MpvController:
             f"--input-ipc-server={path}",
             "--",
             url,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
 
         for _ in range(50):
@@ -121,11 +123,25 @@ class MpvController:
         asyncio.create_task(self._post_connect_check())
 
     async def _post_connect_check(self) -> None:
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(3)
         errs = self.last_errors(5)
         if errs and self.on_audio_error is not None:
             joined = "  ".join(errs)[:200]
             res = self.on_audio_error(joined)
+            if asyncio.iscoroutine(res):
+                asyncio.create_task(res)
+        if not self.is_running:
+            return
+        try:
+            paused = await self.get_property("pause")
+            time_pos = await self.get_property("time-pos")
+        except Exception:
+            return
+        if time_pos is None and not paused:
+            if self.on_audio_error is not None:
+                res = self.on_audio_error("faixa nao iniciou — yt-dlp falhou? rode: mpv <url>")
+                if asyncio.iscoroutine(res):
+                    asyncio.create_task(res)
             if asyncio.iscoroutine(res):
                 asyncio.create_task(res)
 
