@@ -100,6 +100,7 @@ class MpvController:
             "--no-video",
             f"--volume={self._volume}",
             "--keep-open=always",
+            "--ytdl-format=bestaudio/best",
             f"--input-ipc-server={path}",
             "--",
             url,

@@ -135,6 +135,10 @@ scripts/termux-setup.sh
   - Confirme que `mpv --no-video <url>` isolado tem audio (testa o backend).
   - Mate processos mpv pendurados de execucoes anteriores: `pkill -f 'mpv.*input-ipc-server'`.
   - O app agora captura o stderr do mpv e notifica erros de audio output (`AO`/`audio`) na propria tela — se aparecer uma notificacao vermelha, e o ponto de partida.
+- **sem som no Wi-Fi (mas toca no 4G)**: provavelmente `429 Too Many Requests` do YouTube rate-limitando o IP compartilhado do Wi-Fi. O app faz retry com backoff automatico, mas se persistir:
+  - Instale um JS runtime para o yt-dlp: `pkg install deno` (YouTube extraction sem JS runtime esta deprecada e alguns formatos podem faltar).
+  - Aguarde alguns minutos (rate limit e temporario) ou troque de rede.
+- **playlist URL nao funciona (404)**: a extracao de playlist tab do YouTube pelo yt-dlp pode falhar sem um JS runtime instalado. Instale `pkg install deno` e tente novamente. Use o formato `https://www.youtube.com/playlist?list=PL...`.
 - **mpv zombies / audio ocupado**: se fechar o app na marra (matar o terminal), processos `mpv --keep-open` podem ficar pendurados segurando o audio output. Rode `pkill mpv` e abra o app de novo.
 - **gap entre faixas (~2-4s)**: esperado — cada faixa sobe um novo mpv + resolve a URL via yt-dlp. Pre-carregamento seria uma evolucao futura.
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from dataclasses import dataclass
 from typing import Optional
 
 from .models import Track
@@ -11,10 +10,42 @@ from .models import Track
 
 YTDLP_BIN = shutil.which("yt-dlp") or "yt-dlp"
 
+_MAX_RETRIES = 2
+_RETRY_BACKOFF = 2.0
 
-@dataclass
+
 class SearchError(RuntimeError):
     pass
+
+
+def _is_rate_limited(stderr: str) -> bool:
+    return "429" in stderr or "Too Many Requests" in stderr
+
+
+async def _run_ytdlp(cmd: list[str]) -> dict:
+    """Roda yt-dlp, faz retry com backoff se der 429, retorna o JSON parseado."""
+    last_err = ""
+    for attempt in range(_MAX_RETRIES + 1):
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.wait()
+        if proc.returncode == 0:
+            assert proc.stdout is not None
+            data = await proc.stdout.read()
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError as e:
+                raise SearchError(f"resposta JSON invalida: {e}") from e
+        stderr_bytes = await proc.stderr.read() if proc.stderr else b""
+        last_err = stderr_bytes.decode("utf-8", "replace").strip()
+        if _is_rate_limited(last_err) and attempt < _MAX_RETRIES:
+            await asyncio.sleep(_RETRY_BACKOFF)
+            continue
+        raise SearchError(last_err or "yt-dlp falhou")
+    raise SearchError(last_err or "yt-dlp falhou")
 
 
 async def search(query: str, limit: int = 30) -> list[Track]:
@@ -28,25 +59,9 @@ async def search(query: str, limit: int = 30) -> list[Track]:
         "-J",
         "--no-warnings",
         "--no-playlist-reverse",
-        "--extractor-args",
-        "youtube:player_client=android,web",
         target,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.wait()
-    if proc.returncode != 0:
-        stderr = await proc.stderr.read() if proc.stderr else b""
-        raise SearchError(stderr.decode("utf-8", "replace").strip() or "yt-dlp falhou")
-    assert proc.stdout is not None
-    data = await proc.stdout.read()
-    try:
-        obj = json.loads(data)
-    except json.JSONDecodeError as e:
-        raise SearchError(f"resposta JSON invalida: {e}") from e
+    obj = await _run_ytdlp(cmd)
     return _parse_entries(obj)
 
 
@@ -91,25 +106,9 @@ async def fetch_playlist(url: str) -> list[Track]:
         "-J",
         "--no-warnings",
         "--no-playlist-reverse",
-        "--extractor-args",
-        "youtube:player_client=android,web",
         url,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.wait()
-    if proc.returncode != 0:
-        stderr = await proc.stderr.read() if proc.stderr else b""
-        raise SearchError(stderr.decode("utf-8", "replace").strip() or "yt-dlp falhou")
-    assert proc.stdout is not None
-    data = await proc.stdout.read()
-    try:
-        obj = json.loads(data)
-    except json.JSONDecodeError as e:
-        raise SearchError(f"resposta JSON invalida: {e}") from e
+    obj = await _run_ytdlp(cmd)
     return _parse_entries(obj)
 
 
