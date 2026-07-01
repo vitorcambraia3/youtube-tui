@@ -7,24 +7,29 @@ TUI para tocar musicas do YouTube diretamente do terminal, feita para rodar no *
 - Fila/playlist, favoritos e historico salvos localmente em SQLite.
 - Controles: play/pause, seek, volume, proxima/anterior.
 
-## Requisitos (Termux)
+## Instalacao (Termux)
+
+Clone o repositorio e rode o setup:
 
 ```bash
-pkg install python mpv yt-dlp
-pip install textual
-```
-
-Ou use o script de setup:
-
-```bash
+git clone https://github.com/vitorcambraia3/youtube-tui.git
+cd youtube-tui
 bash scripts/termux-setup.sh
 ```
 
-## Instalar o app
+O script `termux-setup.sh` instala `python`, `mpv`, `yt-dlp` (via `pkg`) e o `youtube-tui` em modo editavel (`pip install -e .`).
 
-Na pasta do projeto:
+### Passo a passo manual
 
 ```bash
+# 1. dependencias do sistema
+pkg install python mpv yt-dlp
+
+# 2. clonar e entrar na pasta
+git clone https://github.com/vitorcambraia3/youtube-tui.git
+cd youtube-tui
+
+# 3. instalar o app
 pip install -e .
 ```
 
