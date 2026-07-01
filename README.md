@@ -41,6 +41,26 @@ youtube-tui
 python -m youtube_tui
 ```
 
+## Atualizar
+
+```bash
+cd youtube-tui
+git pull
+pip install -e .
+```
+
+## Desinstalar
+
+```bash
+pip uninstall youtube-tui
+```
+
+Para remover tambem os dados locais (favoritos e historico salvos em SQLite):
+
+```bash
+rm -rf ~/.local/share/youtube-tui
+```
+
 ## Atalhos
 
 ### Globais (em qualquer tela — exceto enquanto digita na busca)
