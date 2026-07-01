@@ -53,6 +53,7 @@ class YoutubeTuiApp(App):
         self.queue: list[Track] = []
         self.current_index: int = -1
         self.current_track: Optional[Track] = None
+        self._mpv_error_shown: bool = False
 
     # ---- lifecycle ----
     async def on_mount(self) -> None:
@@ -79,6 +80,7 @@ class YoutubeTuiApp(App):
         self.current_track = track
         self.storage.log_play(track)
         await self.player.load(track.webpage_url, "replace")
+        self._mpv_error_shown = False
         self.notify(f"Tocando: {track.title}", timeout=2)
         self.refresh_now_playing()
 
@@ -213,6 +215,12 @@ class YoutubeTuiApp(App):
             vol = await self.player.get_property("volume")
         except Exception:
             return
+        if self._mpv_error_shown is False:
+            errs = self.player.last_errors(3)
+            if errs:
+                self._mpv_error_shown = True
+                msg = "  ".join(errs)[:200]
+                self.notify(f"[mpv] {msg}", severity="error", timeout=8)
         self.update_now_playing_state(
             time_pos=float(pos) if isinstance(pos, (int, float)) else 0.0,
             duration=float(dur) if isinstance(dur, (int, float)) else 0.0,

@@ -10,7 +10,7 @@ from .models import Track
 
 
 class MpvController:
-    """Controla um processo mpv via socket IPC (input-ipc-server).
+    """Controla um proceso mpv via socket IPC (input-ipc-server).
 
     Usa asyncio para integrar com o event loop do Textual.
     """
@@ -23,8 +23,10 @@ class MpvController:
         self._req_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
         self._observers: dict[int, asyncio.Future] = {}
         self._obs_id = 0
+        self._errors: list[str] = []
         self.on_end_file: Optional[Callable[[dict], Awaitable[None] | None]] = None
         self.on_start_file: Optional[Callable[[str], Awaitable[None] | None]] = None
 
@@ -45,12 +47,11 @@ class MpvController:
             "--idle=yes",
             "--no-video",
             "--no-terminal",
-            "--no-config",
             "--volume=80",
             f"--input-ipc-server={path}",
             "--reset-on-next-file=pause",
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
         for _ in range(50):
@@ -63,6 +64,7 @@ class MpvController:
         self._reader, self._writer = await asyncio.open_unix_connection(self._sock_path)
         self._reader_task = asyncio.create_task(self._read_loop())
         asyncio.create_task(self._watch_process())
+        asyncio.create_task(self._read_stderr())
 
     async def _watch_process(self) -> None:
         assert self._proc is not None
@@ -72,6 +74,24 @@ class MpvController:
                 fut.cancel()
         if self._writer is not None:
             self._writer.close()
+
+    async def _read_stderr(self) -> None:
+        assert self._proc is not None and self._proc.stderr is not None
+        while True:
+            try:
+                line = await self._proc.stderr.readline()
+            except (asyncio.IncompleteReadError, ConnectionError):
+                break
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").rstrip()
+            if text:
+                self._errors.append(text)
+                if len(self._errors) > 50:
+                    self._errors.pop(0)
+
+    def last_errors(self, n: int = 10) -> list[str]:
+        return list(self._errors[-n:])
 
     async def _read_loop(self) -> None:
         assert self._reader is not None
@@ -185,6 +205,8 @@ class MpvController:
         self._sock_path = None
         if self._reader_task is not None:
             self._reader_task.cancel()
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
 
     async def get_property(self, name: str):
         return await self._command("get_property", name)
