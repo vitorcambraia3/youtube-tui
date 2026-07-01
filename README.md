@@ -6,6 +6,8 @@ TUI para tocar musicas do YouTube diretamente do terminal, feita para rodar no *
 - Playback via `mpv` controlado por IPC (socket unix).
 - Fila/playlist, favoritos e historico salvos localmente em SQLite.
 - Controles: play/pause, seek, volume, proxima/anterior.
+- UI single-screen com abas na base (**TabbedContent**) e mini-player fixo.
+- Otimizado para celular (Termux) — navegação por teclado, sem depender de ESC.
 
 ## Instalacao (Termux)
 
@@ -63,54 +65,66 @@ rm -rf ~/.local/share/youtube-tui
 
 ## Atalhos
 
-### Globais (em qualquer tela — exceto enquanto digita na busca)
+A interface tem 5 abas na base (Busca, Toca, Fila, Fav, Hist) e um mini-player fixo em cima das abas em cima delas.
+
+### Navegação entre abas (sempre funcionam, são teclas de navegação primárias)
 | Tecla | Acao |
 |-------|------|
-| `1` | tela de busca |
-| `2` | tocando agora |
-| `3` | fila |
-| `4` | favoritos |
-| `5` | historico |
+| `1` | ir para Busca |
+| `2` | ir para Toca (tocando agora) |
+| `3` | ir para Fila |
+| `4` | ir para Favoritos |
+| `5` | ir para Historico |
+| `backspace` | voltar para a aba Busca |
+| `ctrl+q` | sair do app |
+
+> Nota: como `1`-`5` são atalhos de aba com prioridade alta, **não dá pra digitar números** no campo de busca. Buscas de musicas (texto) não precisam de números na maioria dos casos.
+
+### Playback (funciona de qualquer aba)
+| Tecla | Acao |
+|-------|------|
 | `space` | play / pause |
 | `n` | proxima faixa |
 | `b` | faixa anterior |
 | `←` / `→` | seek -5s / +5s |
 | `+` / `-` | volume +5 / -5 |
-| `esc` | voltar / pop de tela |
-| `a` | favoritar a faixa atual (na tela "Tocando agora") |
-| `tab` | alternar foco entre busca e resultados |
-
-> As teclas `1`-`5` nao funcionam enquanto o campo de busca esta focado (digitando). Use `tab` para tirar o foco, ou `enter` para buscar.
 
 ### Em listas (busca, fila, favoritos, historico)
 | Tecla | Acao |
 |-------|------|
 | `↑` / `↓` | navegar |
-| `enter` | tocar selecionada |
-| `s` | tocar selecionada |
+| `enter` ou `s` | tocar selecionada |
 | `f` | adicionar a fila |
-| `a` | favoritar selecionada |
+| `a` | favoritar selecionada (ou a faixa atual na aba Toca) |
 | `d` | remover (fila / favoritos) |
+
+### Na aba Toca há também botões focáveis
+Use `tab` para navegar entre o Input/botões/listas. Os botões em "Toca" (`◀◀ (b)`, `space`, `(n) ▶▶`, `← -5s`, `a ★`, `+5s →`, etc.) funcionam tanto pelo atalho de tecla quanto por `tab` + `enter`.
+
+### Mini-player
+A barra fixa em cima das abas mostra `♪ título 1:23/3:45 ▶`. Toque/clicável em mouse; no teclado, navegue com `tab` até ela e pressione `enter` para ir à aba Toca.
 
 ## Como funciona
 
-- `player.py`: sobe um processo `mpv --idle --no-video --input-ipc-server=<socket>` e fala com ele via JSON sobre socket unix (asyncio). Eventos `end-file` (reason `eof`) disparam a proxima faixa automaticamente.
+- `player.py`: sobe um processo `mpv --idle --no-video --input-ipc-server=<socket>` e fala com ele via JSON sobre socket unix (asyncio). Eventos `end-file` (reason `eof`) disparam a proxima faixa automaticamente. Respeita o `mpv.conf` do usuário (importante no Termux para o audio output `opensles`).
 - `search.py`: `yt-dlp "ytsearch30:QUERY" --flat-playlist -J` retorna entradas; parseamos `id`, `title`, `channel`, `duration`, `url`.
 - `storage.py`: SQLite em `$XDG_DATA_HOME/youtube-tui/library.db` (ou `~/.local/share/...`).
-- `app.py`: Textual App com keybindings globais e telas (screens) para busca, tocando-agora, fila, favoritos e historico.
+- `app.py`: Textual App single-screen com `TabbedContent` (abas na base) + mini-player fixo + keybindings globais. As teclas `1`-`5` são `priority=True` para sempre trocar de aba. `_set_tab` limpa o foco antes de trocar (Textual segue foco dentro de panes) e foca o widget inicial de cada aba.
+- `panels/`: SearchPanel, NowPlayingPanel (com botões focáveis), QueuePanel, FavoritesPanel, HistoryPanel — containers filhos de cada `TabPane`.
+- `widgets/`: MiniPlayer (barra fixa) + helpers de lista.
 
 ## Estrutura
 
 ```
 youtube_tui/
   __main__.py        # entrypoint
-  app.py             # App + estado global + keybindings
+  app.py             # App + TabbedContent + estado + keybindings
   player.py          # MpvController (IPC async)
   search.py          # yt-dlp wrapper
   storage.py         # SQLite (favoritos + historico)
   models.py          # dataclass Track
-  screens/           # SearchScreen, NowPlaying, Queue, Favorites, History
-  widgets/           # helpers de lista
+  panels/            # SearchPanel, NowPlaying, Queue, Favorites, History
+  widgets/           # MiniPlayer + helpers de lista
 scripts/termux-setup.sh
 ```
 

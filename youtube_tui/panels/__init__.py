@@ -1,0 +1,1 @@
+"""Paineis (Container) do app — single-screen + TabbedContent."""

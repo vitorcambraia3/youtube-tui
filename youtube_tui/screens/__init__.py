@@ -1,1 +1,0 @@
-"""Telas (screens) do app."""
