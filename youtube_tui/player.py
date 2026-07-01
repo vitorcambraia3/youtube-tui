@@ -4,9 +4,14 @@ import asyncio
 import json
 import os
 import tempfile
+from collections import deque
 from typing import Awaitable, Callable, Optional
 
 from .models import Track
+
+
+class MpvNotRunningError(RuntimeError):
+    """Levantada quando o processo mpv nao esta pronto para receber comandos IPC."""
 
 
 class MpvController:
@@ -27,11 +32,21 @@ class MpvController:
         self._reader_task: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._watch_task: Optional[asyncio.Task] = None
-        self._errors: list[str] = []
+        self._post_check_task: Optional[asyncio.Task] = None
+        self._cb_tasks: set[asyncio.Task] = set()
+        self._errors: deque[str] = deque(maxlen=50)
         self._volume: int = 80
+        self._load_lock = asyncio.Lock()
         self.on_end_file: Optional[Callable[[dict], Awaitable[None] | None]] = None
         self.on_start_file: Optional[Callable[[str], Awaitable[None] | None]] = None
         self.on_audio_error: Optional[Callable[[str], Awaitable[None] | None]] = None
+
+    def _schedule_cb(self, coro: Awaitable[None]) -> asyncio.Task:
+        """Agenda coroutine de callback uma unica vez, retendo a task ate concluida."""
+        task = asyncio.create_task(coro)
+        self._cb_tasks.add(task)
+        task.add_done_callback(self._cb_tasks.discard)
+        return task
 
     @property
     def is_running(self) -> bool:
@@ -58,7 +73,7 @@ class MpvController:
                     await self._proc.wait()
                 except Exception:
                     pass
-        self._cancel_tasks()
+        await self._cancel_tasks()
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -75,62 +90,76 @@ class MpvController:
         self._sock_path = None
         self._pending.clear()
 
-    def _cancel_tasks(self) -> None:
-        for attr in ("_reader_task", "_stderr_task", "_watch_task"):
+    async def _cancel_tasks(self) -> None:
+        """Cancela tasks auxiliares e aguarda efetivamente o termino."""
+        tasks: list[asyncio.Task] = []
+        for attr in ("_reader_task", "_stderr_task", "_watch_task", "_post_check_task"):
             t = getattr(self, attr, None)
             if t is not None and not t.done():
                 t.cancel()
-        self._reader_task = None
-        self._stderr_task = None
-        self._watch_task = None
+                tasks.append(t)
+            setattr(self, attr, None)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def load(self, url: str, mode: str = "replace") -> None:
         """Sobe um novo mpv com a URL direto no spawn e conecta ao IPC."""
-        await self._stop_internal()
-        self._errors = []
+        async with self._load_lock:
+            await self._stop_internal()
+            self._errors.clear()
 
-        fd, path = tempfile.mkstemp(prefix="mpvsock-", suffix=".sock")
-        os.close(fd)
-        os.unlink(path)
-        self._sock_path = path
+            fd, path = tempfile.mkstemp(prefix="mpvsock-", suffix=".sock")
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._sock_path = path
 
-        self._proc = await asyncio.create_subprocess_exec(
-            "mpv",
-            "--no-terminal",
-            "--no-video",
-            f"--volume={self._volume}",
-            "--keep-open=always",
-            "--ytdl-format=bestaudio/best",
-            f"--input-ipc-server={path}",
-            "--",
-            url,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+            self._proc = await asyncio.create_subprocess_exec(
+                "mpv",
+                "--no-terminal",
+                "--no-video",
+                f"--volume={self._volume}",
+                "--keep-open=always",
+                "--ytdl-format=bestaudio/best",
+                f"--input-ipc-server={path}",
+                "--",
+                url,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
 
-        for _ in range(50):
-            if os.path.exists(self._sock_path):
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise RuntimeError("mpv IPC socket nao apareceu")
+            try:
+                for _ in range(50):
+                    if os.path.exists(self._sock_path):
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    raise RuntimeError("mpv IPC socket nao apareceu")
+            except Exception:
+                await self._stop_internal()
+                raise
 
-        self._reader, self._writer = await asyncio.open_unix_connection(self._sock_path)
-        self._reader_task = asyncio.create_task(self._read_loop())
-        self._watch_task = asyncio.create_task(self._watch_process())
-        self._stderr_task = asyncio.create_task(self._read_stderr())
-        asyncio.create_task(self._post_connect_check())
+            self._reader, self._writer = await asyncio.open_unix_connection(self._sock_path)
+            self._reader_task = asyncio.create_task(self._read_loop())
+            self._watch_task = asyncio.create_task(self._watch_process())
+            self._stderr_task = asyncio.create_task(self._read_stderr())
+            self._post_check_task = asyncio.create_task(self._post_connect_check())
 
     async def _post_connect_check(self) -> None:
         await asyncio.sleep(3)
         errs = self.last_errors(5)
         if errs and self.on_audio_error is not None:
             joined = "  ".join(errs)[:200]
-            res = self.on_audio_error(joined)
-            if asyncio.iscoroutine(res):
-                asyncio.create_task(res)
+            coro = self.on_audio_error(joined)
+            if asyncio.iscoroutine(coro):
+                self._schedule_cb(coro)
         if not self.is_running:
             return
         try:
@@ -140,11 +169,9 @@ class MpvController:
             return
         if time_pos is None and not paused:
             if self.on_audio_error is not None:
-                res = self.on_audio_error("faixa nao iniciou — yt-dlp falhou? rode: mpv <url>")
-                if asyncio.iscoroutine(res):
-                    asyncio.create_task(res)
-            if asyncio.iscoroutine(res):
-                asyncio.create_task(res)
+                coro = self.on_audio_error("faixa nao iniciou — yt-dlp falhou? rode: mpv <url>")
+                if asyncio.iscoroutine(coro):
+                    self._schedule_cb(coro)
 
     async def _watch_process(self) -> None:
         assert self._proc is not None
@@ -170,11 +197,9 @@ class MpvController:
             text = line.decode("utf-8", "replace").rstrip()
             if text:
                 self._errors.append(text)
-                if len(self._errors) > 50:
-                    self._errors.pop(0)
 
     def last_errors(self, n: int = 10) -> list[str]:
-        return list(self._errors[-n:])
+        return list(self._errors)[-n:] if self._errors else []
 
     async def _read_loop(self) -> None:
         assert self._reader is not None
@@ -202,28 +227,36 @@ class MpvController:
         elif msg.get("event") == "end-file":
             cb = self.on_end_file
             if cb is not None:
-                res = cb(msg)
-                if asyncio.iscoroutine(res):
-                    asyncio.create_task(res)
+                coro = cb(msg)
+                if asyncio.iscoroutine(coro):
+                    self._schedule_cb(coro)
         elif msg.get("event") == "start-file":
             cb = self.on_start_file
             if cb is not None:
-                res = cb(msg.get("name", ""))
-                if asyncio.iscoroutine(res):
-                    asyncio.create_task(res)
+                coro = cb(msg.get("name", ""))
+                if asyncio.iscoroutine(coro):
+                    self._schedule_cb(coro)
 
     async def _command(self, name: str, *args) -> object:
         if not self.is_running:
-            raise RuntimeError("mpv nao esta rodando")
+            raise MpvNotRunningError("mpv nao esta rodando")
         assert self._writer is not None
         self._req_id += 1
         rid = self._req_id
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[rid] = fut
         payload = {"command": [name, *args], "request_id": rid, "async": True}
-        self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
-        await self._writer.drain()
-        return await asyncio.wait_for(fut, timeout=10)
+        try:
+            self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
+            await self._writer.drain()
+        except Exception:
+            self._pending.pop(rid, None)
+            raise
+        try:
+            return await asyncio.wait_for(fut, timeout=10)
+        except asyncio.TimeoutError:
+            self._pending.pop(rid, None)
+            raise MpvNotRunningError("mpv nao respondeu (timeout)")
 
     async def play_pause(self) -> None:
         await self._command("cycle", "pause")

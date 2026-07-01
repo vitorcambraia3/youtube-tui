@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from typing import Optional
 
 from .models import Track
 
@@ -12,6 +11,7 @@ YTDLP_BIN = shutil.which("yt-dlp") or "yt-dlp"
 
 _MAX_RETRIES = 2
 _RETRY_BACKOFF = 2.0
+_PROC_TIMEOUT = 60.0
 
 
 class SearchError(RuntimeError):
@@ -20,6 +20,16 @@ class SearchError(RuntimeError):
 
 def _is_rate_limited(stderr: str) -> bool:
     return "429" in stderr or "Too Many Requests" in stderr
+
+
+async def _kill_proc(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.kill()
+        await proc.wait()
+    except ProcessLookupError:
+        pass
+    except Exception:
+        pass
 
 
 async def _run_ytdlp(cmd: list[str]) -> dict:
@@ -31,7 +41,11 @@ async def _run_ytdlp(cmd: list[str]) -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_PROC_TIMEOUT)
+        except asyncio.TimeoutError:
+            await _kill_proc(proc)
+            raise SearchError("yt-dlp travou (timeout)")
         if proc.returncode == 0:
             assert proc.stdout is not None
             data = await proc.stdout.read()
@@ -45,7 +59,6 @@ async def _run_ytdlp(cmd: list[str]) -> dict:
             await asyncio.sleep(_RETRY_BACKOFF)
             continue
         raise SearchError(last_err or "yt-dlp falhou")
-    raise SearchError(last_err or "yt-dlp falhou")
 
 
 async def search(query: str, limit: int = 30) -> list[Track]:
@@ -67,7 +80,7 @@ async def search(query: str, limit: int = 30) -> list[Track]:
 
 def is_youtube_url(s: str) -> bool:
     s = s.strip()
-    return s.startswith("http://") or (s.startswith("https://") and ("youtube.com" in s or "youtu.be" in s))
+    return s.startswith("https://") and ("youtube.com" in s or "youtu.be" in s)
 
 
 def _parse_entries(obj: dict) -> list[Track]:
@@ -110,10 +123,3 @@ async def fetch_playlist(url: str) -> list[Track]:
     ]
     obj = await _run_ytdlp(cmd)
     return _parse_entries(obj)
-
-
-def ensure_ytdlp() -> None:
-    if shutil.which("yt-dlp") is None:
-        raise SearchError(
-            "yt-dlp nao encontrado. Instale com: pkg install yt-dlp (ou pip install yt-dlp)"
-        )

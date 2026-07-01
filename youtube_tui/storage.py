@@ -55,22 +55,24 @@ class Storage:
         self.path = path or db_path()
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(_SCHEMA)
-        self.conn.commit()
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=3000")
+        with self.conn:
+            self.conn.executescript(_SCHEMA)
 
     def close(self) -> None:
         self.conn.close()
 
     def add_favorite(self, track: Track) -> None:
-        self.conn.execute(
-            "INSERT OR REPLACE INTO favorites (id,title,channel,duration,added_at) VALUES (?,?,?,?,?)",
-            (track.id, track.title, track.channel, track.duration, time.time()),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO favorites (id,title,channel,duration,added_at) VALUES (?,?,?,?,?)",
+                (track.id, track.title, track.channel, track.duration, time.time()),
+            )
 
     def remove_favorite(self, track_id: str) -> None:
-        self.conn.execute("DELETE FROM favorites WHERE id = ?", (track_id,))
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute("DELETE FROM favorites WHERE id = ?", (track_id,))
 
     def is_favorite(self, track_id: str) -> bool:
         cur = self.conn.execute("SELECT 1 FROM favorites WHERE id = ?", (track_id,))
@@ -84,11 +86,11 @@ class Storage:
         return [Track(id=r[0], title=r[1], channel=r[2], duration=r[3]) for r in rows]
 
     def log_play(self, track: Track) -> None:
-        self.conn.execute(
-            "INSERT INTO history (track_id, title, channel, duration, played_at) VALUES (?,?,?,?,?)",
-            (track.id, track.title, track.channel, track.duration, time.time()),
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO history (track_id, title, channel, duration, played_at) VALUES (?,?,?,?,?)",
+                (track.id, track.title, track.channel, track.duration, time.time()),
+            )
 
     def list_history(self, limit: int = 100) -> list[Track]:
         cur = self.conn.execute(
@@ -99,10 +101,10 @@ class Storage:
         return [Track(id=r[0], title=r[1], channel=r[2], duration=r[3]) for r in rows]
 
     def set_meta(self, key: str, value: str) -> None:
-        self.conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+            )
 
     def get_meta(self, key: str, default: str | None = None) -> str | None:
         cur = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,))

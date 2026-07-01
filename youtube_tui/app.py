@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.widgets import Header, ListView, TabbedContent, TabPane
 
 from .models import Track
-from .player import MpvController
+from .player import MpvController, MpvNotRunningError
 from .search import search as yt_search, fetch_playlist as yt_fetch_playlist, is_youtube_url
 from .storage import Storage
 from .panels.search import SearchPanel
@@ -62,10 +62,8 @@ class YoutubeTuiApp(App):
         async def _wrapped():
             try:
                 await coro
-            except RuntimeError as e:
-                if "nao esta rodando" in str(e):
-                    return
-                self.notify(f"[mpv] {e}", severity="error", timeout=6)
+            except MpvNotRunningError:
+                return
             except Exception as e:
                 self.notify(f"[mpv] {type(e).__name__}: {str(e)[:120]}", severity="error", timeout=6)
         return self.run_worker(_wrapped(), exit_on_error=False)
@@ -105,6 +103,7 @@ class YoutubeTuiApp(App):
         self._np_dur: float = 0.0
         self._np_paused: bool = False
         self._np_volume: float = 80.0
+        self._fetching: bool = False
 
     # ---- lifecycle ----
     def compose(self) -> ComposeResult:
@@ -147,16 +146,23 @@ class YoutubeTuiApp(App):
         self._refresh_now()
 
     async def play_track(self, track: Track, append: bool = False) -> None:
-        if append:
-            self.queue.append(track)
-        await self.play_index(len(self.queue) - 1 if append else self._append_and_jump(track))
-
-    def _append_and_jump(self, track: Track) -> int:
         self.queue.append(track)
-        return len(self.queue) - 1
+        if append:
+            self._refresh_now()
+            return
+        await self.play_index(len(self.queue) - 1)
 
     async def _on_end_file(self, msg: dict) -> None:
         reason = msg.get("reason", "")
+        if reason == "error":
+            if not self._mpv_error_shown:
+                self._mpv_error_shown = True
+                self.notify("[mpv] faixa terminou com erro", severity="error", timeout=6)
+            await self.player.stop()
+            self.current_track = None
+            self._refresh_mini()
+            self._refresh_now()
+            return
         if reason != "eof":
             return
         if self.current_index + 1 < len(self.queue):
@@ -455,27 +461,33 @@ class YoutubeTuiApp(App):
     def _poll_state(self) -> None:
         if not self.player.is_running:
             return
+        if self._fetching:
+            return
+        self._fetching = True
         self._worker(self._fetch_props())
 
     async def _fetch_props(self) -> None:
-        if self._mpv_error_shown is False:
-            errs = self.player.last_errors(3)
-            if errs:
-                self._mpv_error_shown = True
-                msg = "  ".join(errs)[:200]
-                self.notify(f"[mpv] {msg}", severity="error", timeout=8)
         try:
-            pos = await self.player.get_property("time-pos")
-            dur = await self.player.get_property("duration")
-            paused = await self.player.get_property("pause")
-            vol = await self.player.get_property("volume")
-        except Exception:
-            return
-        self._np_time = float(pos) if isinstance(pos, (int, float)) else 0.0
-        self._np_dur = float(dur) if isinstance(dur, (int, float)) else 0.0
-        self._np_paused = bool(paused)
-        self._np_volume = float(vol) if isinstance(vol, (int, float)) else 80.0
-        self.update_now_playing_state(self._np_time, self._np_dur, self._np_paused, self._np_volume)
+            if self._mpv_error_shown is False:
+                errs = self.player.last_errors(3)
+                if errs:
+                    self._mpv_error_shown = True
+                    msg = "  ".join(errs)[:200]
+                    self.notify(f"[mpv] {msg}", severity="error", timeout=8)
+            try:
+                pos = await self.player.get_property("time-pos")
+                dur = await self.player.get_property("duration")
+                paused = await self.player.get_property("pause")
+                vol = await self.player.get_property("volume")
+            except Exception:
+                return
+            self._np_time = float(pos) if isinstance(pos, (int, float)) else 0.0
+            self._np_dur = float(dur) if isinstance(dur, (int, float)) else 0.0
+            self._np_paused = bool(paused)
+            self._np_volume = float(vol) if isinstance(vol, (int, float)) else 80.0
+            self.update_now_playing_state(self._np_time, self._np_dur, self._np_paused, self._np_volume)
+        finally:
+            self._fetching = False
 
     def update_now_playing_state(self, time_pos: float, duration: float, paused: bool, volume: float) -> None:
         try:

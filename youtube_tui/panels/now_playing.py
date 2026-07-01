@@ -3,23 +3,9 @@ from __future__ import annotations
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Label, ListItem, ListView, ProgressBar, Static
+from textual.widgets import Button, ProgressBar, Static
 
 from ..models import Track
-from ..widgets.queue_list import track_label
-
-
-def _action_bar(*buttons: tuple[str, str]) -> ComposeResult:
-    with Horizontal(classes="action-bar"):
-        for label, key in buttons:
-            yield Button(label, id=f"btn-{key}")
-
-
-def _action_bar(*buttons) -> ComposeResult:
-    with Horizontal(classes="action-bar"):
-        for label, vid in buttons:
-            yield Button(label, id=vid)
-    yield from []
 
 
 class NowPlayingPanel(Vertical):

@@ -74,6 +74,8 @@ class QueuePanel(Vertical):
             self.app._worker(self.app.player.stop())
             self.app.current_track = None
             self.app.current_index = -1
+            self.app._refresh_mini()
+            self.app._refresh_now()
         elif self.app.current_index > idx:
             self.app.current_index -= 1
         self.app.notify(f"removido: {removed.title}", timeout=1)

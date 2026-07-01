@@ -74,3 +74,4 @@ class HistoryPanel(Vertical):
             self.app.append_to_queue(t)
         elif event.button.id == "btn-fav":
             self.app.toggle_favorite_track(t)
+            self._rebuild()
