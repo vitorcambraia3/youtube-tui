@@ -62,6 +62,10 @@ class YoutubeTuiApp(App):
         async def _wrapped():
             try:
                 await coro
+            except RuntimeError as e:
+                if "nao esta rodando" in str(e):
+                    return
+                self.notify(f"[mpv] {e}", severity="error", timeout=6)
             except Exception as e:
                 self.notify(f"[mpv] {type(e).__name__}: {str(e)[:120]}", severity="error", timeout=6)
         return self.run_worker(_wrapped(), exit_on_error=False)
@@ -169,7 +173,15 @@ class YoutubeTuiApp(App):
         self.notify(f"[mpv audio] {msg}", severity="error", timeout=8)
 
     # ---- actions ----
+    def _can_control(self) -> bool:
+        if self.current_track is None or not self.player.is_running:
+            self.notify("nada tocando", timeout=1)
+            return False
+        return True
+
     def action_play_pause(self) -> None:
+        if not self._can_control():
+            return
         self._worker(self.player.play_pause())
 
     def action_next_track(self) -> None:
@@ -183,15 +195,23 @@ class YoutubeTuiApp(App):
             self._worker(self.play_index(self.current_index - 1))
 
     def action_seek_back(self) -> None:
+        if not self._can_control():
+            return
         self._worker(self.player.seek(-5))
 
     def action_seek_fwd(self) -> None:
+        if not self._can_control():
+            return
         self._worker(self.player.seek(5))
 
     def action_volume_up(self) -> None:
+        if not self._can_control():
+            return
         self._worker(self.player.volume_delta(5))
 
     def action_volume_down(self) -> None:
+        if not self._can_control():
+            return
         self._worker(self.player.volume_delta(-5))
 
     def action_toggle_favorite(self) -> None:
